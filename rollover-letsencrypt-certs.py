@@ -3,6 +3,7 @@
 import os, sys, time, subprocess, urllib2, random, ConfigParser, shutil, numbers, dns.resolver
 from M2Crypto import X509, SSL
 from hashlib import sha256, sha512
+from binascii import a2b_hex, b2a_hex
 
 ##############################################################################################
 #
