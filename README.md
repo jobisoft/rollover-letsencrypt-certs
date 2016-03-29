@@ -24,4 +24,4 @@ Remark: This script assumes, there is only ONE challenge folder for ALL hosted s
         RedirectMatch 301 ^(.*)$ https://example.domain.net$1
 </VirtualHost>
 ```
-All requests to non-ssl pages will be redirected to the corresponding ssl page, except the request to the acme-challenge folder. The site `acme.domain.net` must also be hosted by this server an the path to the `/.well-known/acme-challenge/` subfolder must be defined in pathAcmeChallenge.
+All requests to non-ssl pages will be redirected to the corresponding ssl page, except the request to the acme-challenge folder. The site `acme.domain.net` must also be hosted by this server and the path to the `/.well-known/acme-challenge/` subfolder must be defined in pathAcmeChallenge.
