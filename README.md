@@ -8,7 +8,7 @@ You can get acme-tiny here:
 ```
 This script checks all certs in your apache config, if they exist or need to be renewed. It does not change your apache config, it just creates or renews the certificates used by your config. It uses a separate folder (vault) where all created keys and certs are stored until rollover moves them to the location specified in the apache config.
 
-The script looks for a config file `rollover-letsencrypt-certs` in the current working directory. The script is intended to be invoked by cron. To run it once a day at 10pm, add the following to your crontab:
+The script looks for a config file `rollover-letsencrypt-certs.ini` in the current working directory. The script is intended to be invoked by cron. To run it once a day at 10pm, add the following to your crontab:
 
 ```
 0 22 * * * cd /path/to/folder/with/rollover-letsencrypt-certs.ini && /path/to/rollover-letsencrypt-certs.py /path/to/apache/sites-enabled/
