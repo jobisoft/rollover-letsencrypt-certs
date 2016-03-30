@@ -1,60 +1,33 @@
 #!/usr/bin/python
 
+##############################################################################################
+# rollover-letsencrypt-certs - A wrapper for acme-tiny to get/renew letsencrypt certificates 
+#                              in two steps, to support automated key/cert rollovers.
+# 
+#                              Copyright (C) 2016 John Bieling
+#
+# Available at:
+# https://github.com/jobisoft/rollover-letsencrypt-certs
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of  MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+# more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+##############################################################################################
+
 import os, sys, time, subprocess, urllib2, random, ConfigParser, shutil, numbers, dns.resolver
 from M2Crypto import X509, SSL
 from hashlib import sha256, sha512
 from binascii import a2b_hex, b2a_hex
-
-##############################################################################################
-#
-# rollover-letsencrypt-certs #
-#
-# This is a wrapper for acme-tiny to get/renew letsencrypt certificates in two steps,
-# to support automated key/cert rollovers.
-#
-# You can get acme-tiny here:
-#
-#   git clone https://github.com/diafygi/acme-tiny.git
-#
-# This script checks all certs in your apache config, if they exist or need to
-# be renewed. It does not change your apache config, it just creates or renews
-# the certificates used by your config. It uses a separate folder (vault) where
-# all created keys and certs are stored until rollover moves them to the location
-# specified in the apache config.
-#
-# Certificate Rollover (TLSA/DANE):
-#
-# For this to work, another script/service is needed, which monitors the vaults
-# cert folder and updates/creates the TLSA records for all certificates found
-# there. During rollover, the vaults cert folder will contain the current and the
-# next cert.
-#
-# * 5 days before a certificate expires, a new key will be created and a new
-#   certificate for that key will be pulled from letsencrypt (using acme-tine)
-#   and both files are stored in the vault.
-#
-# * 2 days before a certificate expires, the TLSA record of the domain is checked
-#   for the new certificate. If at least one entry was found and one of them is
-#   matching the new certificate, the old certificate and key are backup-ed and
-#   replaced by the new files. If no TLSA record is found at all, the domain is
-#   assumed to not use TLSA/DANE and the rollover will be executed as well.
-#    
-# Remark: This script assumes, there is only ONE challenge folder for ALL hosted
-# sites, which is invoked by a PROXYPASS:
-#
-#    <VirtualHost *:80>
-#        ServerAdmin webmaster@domain.net
-#        ServerName example.domain.net
-#        ProxyPass /.well-known/acme-challenge http://acme.domain.net/.well-known/acme-challenge/
-#        RedirectMatch 301 ^(.*)$ https://example.domain.net$1
-#    </VirtualHost>
-#
-# All requests to non-ssl pages will be redirected to the corresponding ssl page,
-# except the request to the acme-challenge folder. The site acme.domain.net must
-# also be hosted by this server an the path to the /.well-known/acme-challenge/
-# subfolder must be defined in pathAcmeChallenge.
-#
-##############################################################################################
 
 def usage():
 	print ""
@@ -85,6 +58,13 @@ def getFilesInDirectory(dir, FailOnError = True):
 	else:
 		print "** Folder <"+ dir +"> does not exist. Aborting."
 		sys.exit(0)
+
+def checkFolder(folder):
+	if not folder.endswith("/"):
+		folder = folder + "/"
+	if not os.path.exists(folder):
+			os.makedirs(folder)
+	return folder
 
 def getCA():
 	#Do nothing, if letsencrypt cacert is known already
@@ -141,6 +121,21 @@ def getHash(certificate, mtype):
 	else:
 		raise Exception('mtype should be 0,1,2') 
 
+def hashTLSA(certfile, usage, selector, mtype):
+	# load CA cert or certfile?
+	if usage == "1" or usage == "3":
+		cert = X509.load_cert(certfile)
+	else:
+		cert = X509.load_cert_string(getCA())
+
+	if selector == "1":
+		certhash = getHash(cert.get_pubkey(), mtype)
+	else:
+		certhash = getHash(cert,mtype)	
+		
+	return certhash
+	
+	
 # Check TLSA record for domain. 
 # No entry at all? -> rollover allowed, because that domain is not using TLSA -> return true
 # At least one entry, but not the one for the new crt? -> return false
@@ -160,34 +155,59 @@ def checkTLSA(servername, certfile):
 	except dns.exception.DNSException:
 		print "** Unknown exception while resolving HTTPS TLSA record for <" + servername + ">"
 		return 0
-
+	
+	
 	recordFound = 0
 	for rdata in answers:
 		data = str(rdata).split(" ")
 		if not len(data) == 4:
 			return 0
-
-		usage = data[0]
-		selector = data[1]
-		mtype = data[2]
-		hash = data[3]
-
-		# load CA cert or HOST cert?
-		if usage == "1" or usage == "3":
-			cert = X509.load_cert(certfile)
-		else:
-			cert = X509.load_cert_string(getCA())
-
-		if selector == "1":
-			certhash = getHash(cert.get_pubkey(), mtype)
-		else:
-			certhash = getHash(cert,mtype)
-
-		if hash == certhash:
+		print data
+		if data[3] == hashTLSA(certfile, data[0], data[1], data[2]):
 			recordFound = 1
 
 	return recordFound
 
+
+def updateTLSA(servername, certfiles):
+	
+	# fixed values for letsencrypt certs
+	usage = "3"
+	selector = "0"
+	mtype = "1"
+	
+	newRR = ""
+	for certfile in certfiles:
+		if not os.path.exists(certfile):
+			continue
+
+		# Always create HTTPS TLSA record.
+		protoports = ["433 tcp"]
+
+		# Create SMTP and IMAP TLSA records, if mail domain.
+		if servername in mailDomains:
+			protoports.append("25 tcp")
+			protoports.append("465 tcp")
+			protoports.append("587 tcp")
+			protoports.append("143 tcp")
+			protoports.append("993 tcp")
+
+		for protoport in protoports:
+			(proto, port) = protoport.split(" ")
+			newRR = newRR + "_%s._%s.%s."%(port,proto,servername) + " IN TLSA " + usage + " " + selector + " " + mtype + " " + hashTLSA(certfile, usage, selector, mtype) + "\n"
+
+	# Read current TLSA record file and update if needed.
+	readRR = "invalid"
+	if os.path.exists(pathTLSA + servername):
+		with open (pathTLSA + servername, "r") as myfile:
+			readRR = myfile.read()
+		
+	if not readRR == newRR:
+		print ("-> Updating TLSA records for <" + servername + ">.")
+		with open (pathTLSA + servername, "w") as myfile:
+			 myfile.write(newRR)
+
+	return 1
 
 
 
@@ -417,7 +437,7 @@ def rollover(rolloverconfig):
 	reloadApache = 1
 
 	# Check, if KEY and CRT also have to be prepared for courier-imap-ssl
-	if rolloverconfig["ServerName"] in courierDomains:
+	if rolloverconfig["ServerName"] in mailDomains:
 
 		if not atomicWrite(rolloverconfig["SSLCertificateKeyFile"] + "_crt", crt + "\n" + key):
 			print "   Rollover for <" + rolloverconfig["ServerName"] + "> failed."
@@ -531,23 +551,16 @@ def renewCertIfAny(apacheConfigFile):
 			else:
 				print "-> Scheduled rollover for <" +rolloverconfig["ServerName"]+ "> because currently used CRT/KEY pair is to expire within 24h."
 				rollover(rolloverconfig)
-		else:
-			# No rollover scheduled, but check TLSA anyway
-			if not checkTLSA(rolloverconfig["ServerName"], rolloverconfig["SSLCertificateFile"]):
-				print "** The certificate currently used for <" +rolloverconfig["ServerName"]+ ">"
-				print "   is not listed in its TLSA record (but another one)."
 
+		# Check TLSA record of domain
+		if not checkTLSA(rolloverconfig["ServerName"], rolloverconfig["SSLCertificateFile"]):
+			print "** The certificate currently used for <" +rolloverconfig["ServerName"]+ ">"
+			print "   is not listed in its TLSA record (but another one)."
 
-		# Enforce symlink from apache crt to current crt in vault, first unlink 
-		# whatever is at that location (file, broken symlink, dir).
-		if os.path.exists(rolloverconfig["currentCrt"]):
-			os.unlink(rolloverconfig["currentCrt"])
-		elif not os.path.exists(os.path.dirname(rolloverconfig["currentCrt"])):
-			os.makedirs(os.path.dirname(rolloverconfig["currentCrt"]))
-		
-		if os.path.isfile(rolloverconfig["SSLCertificateFile"]):
-			os.symlink(rolloverconfig["SSLCertificateFile"], rolloverconfig["currentCrt"])
-		else:
+		# Update (if needed) local TLSA record files (which can be included by BIND config)
+		updateTLSA(rolloverconfig["ServerName"], [rolloverconfig["SSLCertificateFile"], rolloverconfig["nextCrt"]])
+
+		if not os.path.isfile(rolloverconfig["SSLCertificateFile"]):
 			print "** Uups! Processing of <" + rolloverconfig["ServerName"] + "> finished,"
 			print "   but <" + rolloverconfig["SSLCertificateFile"] + "> does not exist."
 			print "   Something bad must have happend!"
@@ -583,14 +596,13 @@ pathAccountKey = getConfigEntry('Config', 'pathAccountKey', Config)
 pathAcmeTiny = getConfigEntry('Config', 'pathAcmeTiny', Config)
 pathAcmeChallenge = getConfigEntry('Config', 'pathAcmeChallenge', Config)
 pathVault = getConfigEntry('Config', 'pathVault', Config)
-courierDomains =  getConfigEntry('Config', 'courierDomains', Config).split(" ")
+pathTLSA = getConfigEntry('Config', 'pathTLSA', Config)
+mailDomains =  getConfigEntry('Config', 'mailDomains', Config).split(" ")
 pathOpenssl = getConfigEntry('Config', 'pathOpenssl', Config)
 
-if not pathVault.endswith("/"):
-	pathVault = pathVault + "/"
-
-if not pathAcmeChallenge.endswith("/"):
-	pathAcmeChallenge = pathAcmeChallenge + "/"
+pathAcmeChallenge = checkFolder(pathAcmeChallenge)
+pathVault = checkFolder(pathVault)
+pathTLSA = checkFolder(pathTLSA)
 
 # Other Defaults
 pathApacheConfigDir = sys.argv[1]
