@@ -182,7 +182,7 @@ def updateTLSA(servername, certfiles):
 			continue
 
 		# Always create HTTPS TLSA record.
-		protoports = ["433 tcp"]
+		protoports = ["443 tcp"]
 
 		# Create SMTP and IMAP TLSA records, if mail domain.
 		if servername in mailDomains:
@@ -193,7 +193,7 @@ def updateTLSA(servername, certfiles):
 			protoports.append("993 tcp")
 
 		for protoport in protoports:
-			(proto, port) = protoport.split(" ")
+			(port, proto) = protoport.split(" ")
 			newRR = newRR + "_%s._%s.%s."%(port,proto,servername) + " IN TLSA " + usage + " " + selector + " " + mtype + " " + hashTLSA(certfile, usage, selector, mtype) + "\n"
 
 	# Read current TLSA record file and update if needed.
