@@ -162,7 +162,6 @@ def checkTLSA(servername, certfile):
 		data = str(rdata).split(" ")
 		if not len(data) == 4:
 			return 0
-		print data
 		if data[3] == hashTLSA(certfile, data[0], data[1], data[2]):
 			recordFound = 1
 
