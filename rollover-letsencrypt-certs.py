@@ -66,21 +66,58 @@ def checkFolder(folder):
 			os.makedirs(folder)
 	return folder
 
-def getCA():
-	#Do nothing, if letsencrypt cacert is known already
-	global cacert
-	if cacert:
-		return cacert
+def get_serial_from_cert(certfile):
+	serial = str('{0:x}'.format(int(X509.load_cert(certfile).get_serial_number())))
+	if not len(serial) % 2 == 0:
+		serial = "0" + serial
 
-	print "-> Retrieving letsencrypt cert chain."
+	return serial
+
+def get_caURL_from_serial(serial):
 	try:
-		f = urllib2.urlopen("https://letsencrypt.org/certs/lets-encrypt-x1-cross-signed.pem")
+		response = urllib2.urlopen("https://acme-v01.api.letsencrypt.org/acme/cert/" + serial).info()
+	except Exception as err:
+		print "** Error asking LE for CA of serial [" + serial + "]: " + str(err)
+		return ""
+
+	link = extractStartStop("<", ">" , response["Link"])
+	return link
+
+# Gets the CA certificate a LE certificate was signed with, according to
+# https://community.letsencrypt.org/t/permanent-link-to-current-issuer-certificate/14111/4
+# After the bug described there is fixed, we could actually store the CA cert as
+# a file, to reduce load on LE
+def getCA(certfile):
+	global caURL_by_serial
+	global caCRT_by_caURL
+
+	# Extract serial from cert.
+	serial = get_serial_from_cert(certfile)
+
+	# Return cert, if it is known already.
+	if serial in caURL_by_serial and caURL_by_serial[serial] in caCRT_by_caURL:
+		return caCRT_by_caURL[caURL_by_serial[serial]]
+
+	# Get URL of cert from serial (ask LE)
+	caURL = get_caURL_from_serial(serial)
+	if caURL == "":
+		return ""
+	else:
+		caURL_by_serial[serial] = caURL
+
+	# Get actual cert from URL
+	if caURL in caCRT_by_caURL:
+		return caCRT_by_caURL[caURL_by_serial[serial]]
+
+	print "-> Retrieving lets encrypt intermediate cert <" + caURL + ">."
+	try:
+		f = urllib2.urlopen("https://acme-v01.api.letsencrypt.org" + caURL)
 	except Exception as err:
 		print "** Failed: " + str(err)
 		return ""
 
-	cacert = f.read().strip()
-	return cacert
+	caCRT_by_caURL[caURL] = X509.load_cert_string(f.read().strip(), X509.FORMAT_DER).as_pem()
+	return caCRT_by_caURL[caURL_by_serial[serial]]
 
 def selfCheckACME(rolloverconfig):
 	print "-> SelfCheck ACME challenge for <" + rolloverconfig["ServerName"] + ">."
@@ -126,7 +163,7 @@ def hashTLSA(certfile, usage, selector, mtype):
 	if usage == "1" or usage == "3":
 		cert = X509.load_cert(certfile)
 	else:
-		cert = X509.load_cert_string(getCA())
+		cert = X509.load_cert_string(getCA(certfile))
 
 	if selector == "1":
 		certhash = getHash(cert.get_pubkey(), mtype)
@@ -426,7 +463,7 @@ def rollover(rolloverconfig):
 	if not atomicWrite(rolloverconfig["SSLCertificateKeyFile"], key):
 		print "   Rollover for <" + rolloverconfig["ServerName"] + "> failed."
 		return 0
-	if not atomicWrite(rolloverconfig["SSLCertificateFile"], crt + "\n" + getCA()):
+	if not atomicWrite(rolloverconfig["SSLCertificateFile"], crt + "\n" + getCA(rolloverconfig["nextCrt"])):
 		print "   Rollover for <" + rolloverconfig["ServerName"] + "> failed."
 		return 0
 
@@ -441,7 +478,7 @@ def rollover(rolloverconfig):
 		if not atomicWrite(rolloverconfig["SSLCertificateKeyFile"] + "_crt", crt + "\n" + key):
 			print "   Rollover for <" + rolloverconfig["ServerName"] + "> failed."
 			return 0
-		if not atomicWrite(rolloverconfig["SSLCertificateFile"] + ".trustchain", getCA()):
+		if not atomicWrite(rolloverconfig["SSLCertificateFile"] + ".trustchain", getCA(rolloverconfig["nextCrt"])):
 			print "   Rollover for <" + rolloverconfig["ServerName"] + "> failed."
 			return 0
 
@@ -526,7 +563,7 @@ def renewCertIfAny(apacheConfigFile):
 		# Create new CRT/KEY pair if requested
 		if generateNewKeyCrtPairVault:
 			print "-> New CRT/KEY pair needs to be generated for <" +rolloverconfig["ServerName"]+ "> in vault."
-			if not getCA() or not selfCheckACME(rolloverconfig) or not newKEY(rolloverconfig) or not newCSR(rolloverconfig) or not newCRT(rolloverconfig):
+			if not selfCheckACME(rolloverconfig) or not newKEY(rolloverconfig) or not newCSR(rolloverconfig) or not newCRT(rolloverconfig):
 				continue
 
 		# Check if we need to roll
@@ -605,7 +642,8 @@ pathTLSA = checkFolder(pathTLSA)
 
 # Other Defaults
 pathApacheConfigDir = sys.argv[1]
-cacert = ""
+caURL_by_serial = dict()
+caCRT_by_caURL = dict()
 reloadApache = 0
 reloadCourier = 0
 
