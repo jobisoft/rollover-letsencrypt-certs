@@ -300,7 +300,7 @@ def newCSR(rolloverconfig):
 	return execOpenssl("req -new -sha256 -key " + rolloverconfig["nextKey"] + " -subj '/CN="+rolloverconfig["ServerName"]+"' > "+ rolloverconfig["nextCsr"])
 
 # Get CRT from letsencrypt and store it in vault using acme-tiny.
-def newCRT(rolloverconfig):
+def newCRT(rolloverconfig, count):
 	print "-> Invoking acme-tiny for CSR of private KEY <" + rolloverconfig["nextKey"] + ">."
 	if not os.path.exists(os.path.dirname(rolloverconfig["nextCrt"])):
 		os.makedirs(os.path.dirname(rolloverconfig["nextCrt"]))	
@@ -563,7 +563,7 @@ def renewCertIfAny(apacheConfigFile):
 		# Create new CRT/KEY pair if requested
 		if generateNewKeyCrtPairVault:
 			print "-> New CRT/KEY pair needs to be generated for <" +rolloverconfig["ServerName"]+ "> in vault."
-			if not selfCheckACME(rolloverconfig) or not newKEY(rolloverconfig) or not newCSR(rolloverconfig) or not newCRT(rolloverconfig):
+			if not selfCheckACME(rolloverconfig) or not newKEY(rolloverconfig) or not newCSR(rolloverconfig) or not newCRT(rolloverconfig, count):
 				continue
 
 		# Check if we need to roll
