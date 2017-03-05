@@ -63,7 +63,7 @@ def checkFolder(folder):
 	if not folder.endswith("/"):
 		folder = folder + "/"
 	if not os.path.exists(folder):
-			os.makedirs(folder)
+		os.makedirs(folder)
 	return folder
 
 def get_serial_from_cert(certfile):
@@ -77,8 +77,7 @@ def get_caURL_from_serial(serial):
 	try:
 		response = urllib2.urlopen("https://acme-v01.api.letsencrypt.org/acme/cert/" + serial).info()
 	except Exception as err:
-		print "** Error asking LE for CA of serial [" + serial + "]: " + str(err)
-		return ""
+		raise ValueError("Error asking LE for CA of serial <" + serial + "> (" + str(err) + ").")
 
 	link = extractStartStop("<", ">" , response["Link"])
 	return link
@@ -101,8 +100,7 @@ def getCA(certfile):
 	# Get URL of cert from serial (ask LE) - it now returns the full URL
 	caURL = get_caURL_from_serial(serial)
 	if caURL == "":
-		raise ValueError("Stored CA in caURL_from_serial is empty.")
-		return ""
+		raise ValueError("LE returned empty CA URL for serial <"+serial+">.")
 	else:
 		caURL_by_serial[serial] = caURL
 
@@ -115,9 +113,7 @@ def getCA(certfile):
 	try:
 		f = urllib2.urlopen(caURL)
 	except Exception as err:
-		print "** Failed: " + str(err)
-		raise ValueError("Could not get CA cert.")
-		return ""
+		raise ValueError("Could not get CA cert from LE (" + str(err) + ").")
 
 	caCRT_by_caURL[caURL] = X509.load_cert_string(f.read().strip(), X509.FORMAT_DER).as_pem()
 	return caCRT_by_caURL[caURL_by_serial[serial]]
@@ -159,7 +155,7 @@ def getHash(certificate, mtype):
 	elif mtype == "2":
 		return sha512(certificate).hexdigest()
 	else:
-		raise Exception('mtype should be 0,1,2') 
+		raise ValueError('The mtype for certificate hashing should be 0,1 or 2') 
 
 
 def hashTLSA(certfile, usage, selector, mtype):
@@ -439,40 +435,34 @@ def atomicWrite(dst,value):
 def rollover(rolloverconfig):
 	# Check again, that the rollover CRT/KEY pair is valid
 	if not validCrtKeyPair(rolloverconfig["nextCrt"], rolloverconfig["nextKey"], 1):
-		print "** Rollover for <" + rolloverconfig["ServerName"] + "> failed."
-		return 0
+		raise ValueError ("Invalid CRT/KEY pair.")
 
 	# read KEY and CRT from vault
 	key = ""
 	with open (rolloverconfig["nextKey"], "r") as myfile:
 		key = myfile.read().strip()
 	if not key:
-		print "** Could not read KEY <" + rolloverconfig["nextKey"] + "> from vault."
-		print "   Rollover for <" + rolloverconfig["ServerName"] + "> failed."
-		return 0
+		raise ValueError ("Could not read KEY <" + rolloverconfig["nextKey"] + "> from vault.")
 	
 	crt = ""
 	with open (rolloverconfig["nextCrt"], "r") as myfile:
 		crt = myfile.read().strip()
 	if not crt:
-		print "** Could not read CRT <" + rolloverconfig["nextCrt"] + "> from vault."
-		print "   Rollover for <" + rolloverconfig["ServerName"] + "> failed."
-		return 0
+		raise ValueError ("Could not read CRT <" + rolloverconfig["nextCrt"] + "> from vault.")
 		
-	# Get CA cert, this functions throws a valueError and aborts this rollover
+	# Get CA cert, if this function fails, it throws a valueError and aborts this rollover
 	ca = getCA(rolloverconfig["nextCrt"])
 
 	# Backup old CRT/KEY pair
 	if not archive(rolloverconfig,"CRT") or not archive(rolloverconfig,"KEY"):
-		return 0
+		raise ValueError ("Failed to backup CRT/KEY.")
 
 	# Atomic write of CRT/KEY
 	if not atomicWrite(rolloverconfig["SSLCertificateKeyFile"], key):
-		print "   Rollover for <" + rolloverconfig["ServerName"] + "> failed."
-		return 0
+		raise ValueError ("Atomic write of <" + rolloverconfig["SSLCertificateKeyFile"] + "> failed.")
+
 	if not atomicWrite(rolloverconfig["SSLCertificateFile"], crt + "\n" + ca):
-		print "   Rollover for <" + rolloverconfig["ServerName"] + "> failed."
-		return 0
+		raise ValueError ("Atomic write of <" + rolloverconfig["SSLCertificateFile"] + "> failed.")
 
 	global reloadApache
 	global reloadCourier
@@ -483,11 +473,10 @@ def rollover(rolloverconfig):
 	if rolloverconfig["ServerName"] in mailDomains:
 
 		if not atomicWrite(rolloverconfig["SSLCertificateKeyFile"] + "_crt", crt + "\n" + key):
-			print "   Rollover for <" + rolloverconfig["ServerName"] + "> failed."
-			return 0
+			raise ValueError ("Atomic write of <" + rolloverconfig["SSLCertificateKeyFile"] + "> failed.")
+
 		if not atomicWrite(rolloverconfig["SSLCertificateFile"] + ".trustchain", ca):
-			print "   Rollover for <" + rolloverconfig["ServerName"] + "> failed."
-			return 0
+			raise ValueError ("Atomic write of <" + rolloverconfig["SSLCertificateFile"] + "> failed.")
 
 		reloadCourier = 1
 
@@ -502,12 +491,11 @@ def rollover(rolloverconfig):
 
 def renewCertIfAny(apacheConfigFile):
 	filecontent = ""
-	with open (apacheConfigFile, "r") as myfile:
-		filecontent = myfile.read()
-
-	if not filecontent:
-		print "Could not read " + sys.apacheConfigFile[1]
-		return
+	try:
+		with open (apacheConfigFile, "r") as myfile:
+			filecontent = myfile.read()
+	except Exception as err:
+		raise ValueError("Could not read <" + apacheConfigFile + ">.")
 
 	# Process each VirtualHost - define search strings.
 	startstring = '<VirtualHost'
@@ -660,7 +648,7 @@ for apacheConfigFile in apacheConfigFiles:
 	try :
 		renewCertIfAny(pathApacheConfigDir + apacheConfigFile)
 	except ValueError as e:
-		print "Skipped rollover of <" + apacheConfigFile + ">: " + e.message
+		print "** Skipped rollover of <" + apacheConfigFile + ">: " + e.message
 
 # Reload Apache, if needed
 if reloadApache:
