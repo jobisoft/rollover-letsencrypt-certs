@@ -98,9 +98,10 @@ def getCA(certfile):
 	if serial in caURL_by_serial and caURL_by_serial[serial] in caCRT_by_caURL:
 		return caCRT_by_caURL[caURL_by_serial[serial]]
 
-	# Get URL of cert from serial (ask LE)
+	# Get URL of cert from serial (ask LE) - it now returns the full URL
 	caURL = get_caURL_from_serial(serial)
 	if caURL == "":
+		raise ValueError("Stored CA in caURL_from_serial is empty.")
 		return ""
 	else:
 		caURL_by_serial[serial] = caURL
@@ -109,11 +110,13 @@ def getCA(certfile):
 	if caURL in caCRT_by_caURL:
 		return caCRT_by_caURL[caURL_by_serial[serial]]
 
+	# cert is not yet know, get it from LE
 	print "-> Retrieving lets encrypt intermediate cert <" + caURL + ">."
 	try:
-		f = urllib2.urlopen("https://acme-v01.api.letsencrypt.org" + caURL)
+		f = urllib2.urlopen(caURL)
 	except Exception as err:
 		print "** Failed: " + str(err)
+		raise ValueError("Could not get CA cert.")
 		return ""
 
 	caCRT_by_caURL[caURL] = X509.load_cert_string(f.read().strip(), X509.FORMAT_DER).as_pem()
@@ -157,6 +160,7 @@ def getHash(certificate, mtype):
 		return sha512(certificate).hexdigest()
 	else:
 		raise Exception('mtype should be 0,1,2') 
+
 
 def hashTLSA(certfile, usage, selector, mtype):
 	# load CA cert or certfile?
@@ -455,6 +459,9 @@ def rollover(rolloverconfig):
 		print "   Rollover for <" + rolloverconfig["ServerName"] + "> failed."
 		return 0
 		
+	# Get CA cert, this functions throws a valueError and aborts this rollover
+	ca = getCA(rolloverconfig["nextCrt"])
+
 	# Backup old CRT/KEY pair
 	if not archive(rolloverconfig,"CRT") or not archive(rolloverconfig,"KEY"):
 		return 0
@@ -463,7 +470,7 @@ def rollover(rolloverconfig):
 	if not atomicWrite(rolloverconfig["SSLCertificateKeyFile"], key):
 		print "   Rollover for <" + rolloverconfig["ServerName"] + "> failed."
 		return 0
-	if not atomicWrite(rolloverconfig["SSLCertificateFile"], crt + "\n" + getCA(rolloverconfig["nextCrt"])):
+	if not atomicWrite(rolloverconfig["SSLCertificateFile"], crt + "\n" + ca):
 		print "   Rollover for <" + rolloverconfig["ServerName"] + "> failed."
 		return 0
 
@@ -478,7 +485,7 @@ def rollover(rolloverconfig):
 		if not atomicWrite(rolloverconfig["SSLCertificateKeyFile"] + "_crt", crt + "\n" + key):
 			print "   Rollover for <" + rolloverconfig["ServerName"] + "> failed."
 			return 0
-		if not atomicWrite(rolloverconfig["SSLCertificateFile"] + ".trustchain", getCA(rolloverconfig["nextCrt"])):
+		if not atomicWrite(rolloverconfig["SSLCertificateFile"] + ".trustchain", ca):
 			print "   Rollover for <" + rolloverconfig["ServerName"] + "> failed."
 			return 0
 
@@ -650,14 +657,17 @@ reloadCourier = 0
 # Run thru apache config
 apacheConfigFiles = getFilesInDirectory(pathApacheConfigDir)
 for apacheConfigFile in apacheConfigFiles:
-	renewCertIfAny(pathApacheConfigDir + apacheConfigFile)
+	try :
+		renewCertIfAny(pathApacheConfigDir + apacheConfigFile)
+	except ValueError as e:
+		print "Skipped rollover of <" + apacheConfigFile + ">: " + e.message
 
 # Reload Apache, if needed
 if reloadApache:
 	print "Reloading Apache"
 	try:
 		subprocess.check_call("/usr/sbin/service apache2 reload", shell=True)
-	except subprocess.CalledProcessError as expcheckError:                                                                                                   
+	except subprocess.CalledProcessError as expcheckError:
 		print "** Failed!"
 
 # Reload Courier if needed
@@ -665,5 +675,5 @@ if reloadCourier:
 	print "Reloading Courier-imap-ssl"
 	try:
 		subprocess.check_call("/usr/sbin/service courier-imap-ssl restart", shell=True)
-	except subprocess.CalledProcessError as expcheckError:                                                                                                   
+	except subprocess.CalledProcessError as expcheckError:
 		print "Something went wrong reloading courier-imap-ssl."
