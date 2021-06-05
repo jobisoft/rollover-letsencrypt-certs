@@ -75,12 +75,13 @@ def get_serial_from_cert(certfile):
 
 def get_caURL_from_serial(serial):
 	try:
-		response = urllib2.urlopen("https://acme-v01.api.letsencrypt.org/acme/cert/" + serial).info()
+		response = urllib2.urlopen("https://acme-v02.api.letsencrypt.org/acme/cert/" + serial).info()
 	except Exception as err:
 		raise ValueError("Error asking LE for CA of serial <" + serial + "> (" + str(err) + ").")
 
-	link = extractStartStop("<", ">" , response["Link"])
-	return link
+	for entry in response["Link"].split(","):
+		if "alternate" in entry:
+			return extractStartStop("<", ">" , entry)
 
 # Gets the CA certificate a LE certificate was signed with, according to
 # https://community.letsencrypt.org/t/permanent-link-to-current-issuer-certificate/14111/4
@@ -115,7 +116,9 @@ def getCA(certfile):
 	except Exception as err:
 		raise ValueError("Could not get CA cert from LE (" + str(err) + ").")
 
-	caCRT_by_caURL[caURL] = X509.load_cert_string(f.read().strip(), X509.FORMAT_DER).as_pem()
+	# acme-v02.api is returniong a PEM, so no need to convert it anymore.
+	# caCRT_by_caURL[caURL] = X509.load_cert_string(f.read().strip(), X509.FORMAT_DER).as_pem()
+	caCRT_by_caURL[caURL] = f.read().strip()
 	return caCRT_by_caURL[caURL_by_serial[serial]]
 
 def selfCheckACME(rolloverconfig):
